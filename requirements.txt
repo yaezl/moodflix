@@ -1,0 +1,5 @@
+python-dotenv
+openai
+requests
+supabase
+python-telegram-bot==20.0

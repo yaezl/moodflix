@@ -1,0 +1,42 @@
+# ==== ENTORNO VIRTUAL ====
+venv/
+
+# ==== ARCHIVOS DE CONFIGURACIÓN PRIVADOS ====
+.env
+.env.local
+.env.*.local
+
+# ==== ARCHIVOS DE PYTHON ====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# ==== ARCHIVOS DE LOGS ====
+*.log
+
+# ==== ARCHIVOS TEMPORALES ====
+*.tmp
+*.temp
+
+# ==== ARCHIVOS DEL SISTEMA ====
+.DS_Store
+Thumbs.db
+
+# ==== ARCHIVOS DE EDITOR ====
+.vscode/
+.idea/
+*.swp
+
+# ==== ARCHIVOS DE USUARIO / DATOS SENSIBLES ====
+data/conversation_history.json
+
+# ==== ARCHIVOS DE COMPILACIÓN ====
+build/
+dist/
+*.egg-info/
+
+# ==== OTROS ====
+*.sqlite
+*.db
