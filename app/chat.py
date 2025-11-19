@@ -8,6 +8,7 @@ from .utils import (
     save_conversation_history,
     get_movie_recommendations,
     get_series_recommendations,
+    get_music_recommendations,
 )
 
 
@@ -21,35 +22,39 @@ class RecommenderChatBot:
     # Armado de respuestas finales
     # ---------------------------
     def _build_recommendation_text(self, parsed: dict) -> str:
-        """
-        Usa parsed[type, mood, match_strategy] para llamar a TMDB y
-        construir el texto final de recomendación.
-        - Para películas y series: usa TMDB.
-        - Para música: por ahora solo texto placeholder (Spotify va después).
-        """
         tipo = parsed.get("type")
         mood = parsed.get("mood")
         strategy = parsed.get("match_strategy")
+        genre_name = parsed.get("genre")
 
-        strategy_text = (
-            "acompañar tu estado"
-            if strategy == "match"
-            else "cambiar tu estado / levantarte"
-        )
+        # Texto para estrategia
+        if strategy == "match":
+            strategy_text = "acompañar tu estado"
+        else:
+            strategy_text = "cambiar tu estado / levantarte"
+
+        # Si viene género explícito, lo usamos en el encabezado
+        genre_label = f" de **{genre_name}**" if genre_name else ""
 
         # PELÍCULAS
         if tipo == "movie":
             recs = get_movie_recommendations(parsed)
             if not recs:
                 return (
-                    f"Intenté buscar una **película** para mood **{mood}** y estrategia **{strategy_text}**, "
-                    "pero no encontré resultados o hubo un problema con TMDB.\n"
+                    "Intenté buscar películas pero no encontré resultados o hubo un problema con TMDB.\n"
                     "Verificá tu TMDB_API_KEY o probá describiéndome de otra forma qué querés ver."
                 )
 
-            lines: List[str] = [
-                f"🎬 Te recomiendo estas películas para {strategy_text} estando **{mood}**:"
-            ]
+            # Encabezado depende de si hay mood o solo género
+            if genre_name and (mood == "neutral" or not mood):
+                title_line = f"🎬 Te recomiendo estas películas{genre_label}:"
+            else:
+                title_line = (
+                    f"🎬 Te recomiendo estas películas{genre_label} "
+                    f"para {strategy_text} estando **{mood}**:"
+                )
+
+            lines: List[str] = [title_line]
             for i, r in enumerate(recs, start=1):
                 overview = r["overview"]
                 if len(overview) > 220:
@@ -70,14 +75,19 @@ class RecommenderChatBot:
             recs = get_series_recommendations(parsed)
             if not recs:
                 return (
-                    f"Intenté buscar una **serie** para mood **{mood}** y estrategia **{strategy_text}**, "
-                    "pero no encontré resultados o hubo un problema con TMDB.\n"
+                    "Intenté buscar series pero no encontré resultados o hubo un problema con TMDB.\n"
                     "Verificá tu TMDB_API_KEY o probá describiéndome de otra forma qué querés ver."
                 )
 
-            lines: List[str] = [
-                f"📺 Te recomiendo estas series para {strategy_text} estando **{mood}**:"
-            ]
+            if genre_name and (mood == "neutral" or not mood):
+                title_line = f"📺 Te recomiendo estas series{genre_label}:"
+            else:
+                title_line = (
+                    f"📺 Te recomiendo estas series{genre_label} "
+                    f"para {strategy_text} estando **{mood}**:"
+                )
+
+            lines: List[str] = [title_line]
             for i, r in enumerate(recs, start=1):
                 overview = r["overview"]
                 if len(overview) > 220:
@@ -94,14 +104,37 @@ class RecommenderChatBot:
 
             return "\n".join(lines)
 
-        # MÚSICA (placeholder hasta conectar Spotify)
+        # MÚSICA
         if tipo == "music":
-            return (
-                f"Te voy a recomendar **música** con mood **{mood}** y estrategia **{strategy_text}**, "
-                "pero la integración con Spotify todavía no está lista. Ese será el próximo paso 🚧🎧"
-            )
+            recs = get_music_recommendations(parsed)
+            genre_name = parsed.get("genre")
+            if not recs:
+                return (
+                    "Intenté buscar música en Spotify pero no encontré resultados o hubo un problema de conexión.\n"
+                    "Verificá tus credenciales de Spotify o probá describiéndome de otra forma qué querés escuchar."
+                )
 
-        # Tipo desconocido
+            if genre_name:
+                header = f"🎧 Te recomiendo estas canciones de **{genre_name}** "
+            else:
+                header = "🎧 Te recomiendo estas canciones "
+
+            if mood and mood != "neutral":
+                header += f"para {strategy_text} estando **{mood}**:"
+            else:
+                header += ":"
+
+            lines: List[str] = [header]
+
+            for i, r in enumerate(recs, start=1):
+                lines.append(
+                    f"\n{i}. **{r['title']}** – {r['artist']}\n"
+                    f"   Género(s): {r['genres']}\n"
+                    f"   Escuchar en Spotify: {r['url']}"
+                )
+
+            return "\n".join(lines)
+
         return (
             "Se me mezcló un poco el contexto 😅, probá pidiéndome de nuevo música, película o serie."
         )
@@ -110,25 +143,21 @@ class RecommenderChatBot:
     # Lógica principal del bot
     # ---------------------------
     def handle_message(self, user_id: str, text: str) -> str:
-        """
-        Maneja un mensaje del usuario.
-        - Si hay una intención pendiente, este mensaje se interpreta como
-          respuesta a "¿acompañar o cambiar el ánimo?".
-        - Si no, se interpreta como un nuevo pedido (music/movie/series + mood).
-        """
-
         # 1) Si ya teníamos una intención pendiente, este mensaje es la ESTRATEGIA
         if user_id in self.pending_intents:
             parsed = self.pending_intents[user_id]
-            tipo = parsed["type"]
-            mood = parsed["mood"]
 
-            # 1.a) Intentar con OpenAI interpretar la estrategia
+            # Intentamos inferir estrategia (match/contrast)
             strategy = infer_strategy_with_openai(text, parsed)
-
-            # 1.b) Si OpenAI falló (sin key o error), usamos fallback por keywords
             if strategy is None:
                 strategy = detect_strategy_from_text(text)
+
+            # Además, si el usuario corrige el mood (ej: "no estoy relajada, estoy estresada"),
+            # volvemos a interpretar y si cambia el mood lo actualizamos.
+            new_parsed = parse_user_intent_with_openai(text)
+            new_mood = new_parsed.get("mood")
+            if new_mood and new_mood != "neutral" and new_mood != parsed.get("mood"):
+                parsed["mood"] = new_mood
 
             if strategy is None:
                 response_text = (
@@ -141,26 +170,32 @@ class RecommenderChatBot:
                 save_conversation_history(user_id, text, response_text, parsed)
                 return response_text
 
-            # Ya tenemos estrategia → limpiamos pendiente
             parsed["match_strategy"] = strategy
             del self.pending_intents[user_id]
 
-            # Construimos texto final con TMDB (o placeholder para música)
             response_text = self._build_recommendation_text(parsed)
             save_conversation_history(user_id, text, response_text, parsed)
             return response_text
 
-        # 2) Si NO hay intención pendiente, este mensaje es un NUEVO pedido
+        # 2) NUEVO PEDIDO
         parsed = parse_user_intent_with_openai(text)
         tipo = parsed["type"]
         mood = parsed["mood"]
+        genre_name = parsed.get("genre")
 
-        # Para el primer mensaje, SOLO usamos el detector por keywords
-        # para ver si ya dejó clara la estrategia.
+        # Si es un pedido por género (películas de terror, series de comedia, música pop, rock, etc.)
+        # y no hay mood fuerte, NO preguntamos nada → devolvemos directo.
+        if genre_name and (mood == "neutral" or not mood) and tipo in ("movie", "series", "music"):
+            parsed["match_strategy"] = "match"  # default razonable
+            response_text = self._build_recommendation_text(parsed)
+            save_conversation_history(user_id, text, response_text, parsed)
+            return response_text
+
+        # Si no, flujo normal: ver si ya dijo match/contrast en el mismo mensaje
         strategy = detect_strategy_from_text(text)
 
-        # 2.a) Si AÚN no sabemos la estrategia → preguntamos y guardamos el intent
         if strategy is None:
+            # Preguntamos match vs cambiar estado y guardamos intención pendiente
             self.pending_intents[user_id] = parsed
 
             response_text = (
@@ -176,9 +211,8 @@ class RecommenderChatBot:
             save_conversation_history(user_id, text, response_text, parsed)
             return response_text
 
-        # 3) Si ya tenemos estrategia desde el primer mensaje
+        # Si ya tenemos estrategia desde el primer mensaje
         parsed["match_strategy"] = strategy
         response_text = self._build_recommendation_text(parsed)
-
         save_conversation_history(user_id, text, response_text, parsed)
         return response_text
