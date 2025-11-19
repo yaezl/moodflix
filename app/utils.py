@@ -6,6 +6,9 @@ import requests
 import time
 from openai import OpenAI
 from .config import settings
+import logging
+
+logger = logging.getLogger("moodflix")
 
 HISTORY_PATH = Path("data/conversation_history.json")
 
@@ -97,6 +100,9 @@ def parse_user_intent_with_openai(text: str) -> Dict[str, Any]:
             "    * null si no está claro.\n"
             "No agregues ningún texto fuera del JSON."
         )
+
+        logger.info("🤖 OpenAI - parse_user_intent_with_openai llamado. Texto='%s'", text)
+
 
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -209,6 +215,8 @@ SPOTIFY_TOKEN_EXPIRES_AT: float = 0.0
 
 
 def get_spotify_token() -> str:
+    logger.info("🎧 Spotify - solicitando nuevo access token")
+
     """
     Usa Client Credentials para obtener un access token de Spotify.
     Cachea el token en memoria hasta que expire.
@@ -298,6 +306,8 @@ def _tmdb_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Helper para llamar a TMDB con api_key y manejar errores básicos.
     """
+    logger.info("🎬 TMDB GET %s params=%s", path, params)
+
     if not settings.tmdb_api_key:
         raise RuntimeError("TMDB_API_KEY no configurada en .env")
 
@@ -576,6 +586,8 @@ def get_music_recommendations(parsed: Dict[str, Any], limit: int = 3) -> List[Di
     query = " ".join(query_parts).strip() or "popular"
 
     headers = {"Authorization": f"Bearer {token}"}
+    
+    logger.info("🎧 Spotify - search tracks. Query='%s'", query)
 
     try:
         resp = requests.get(

@@ -4,7 +4,12 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 from app import bot
 from app.config import settings
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
 
 async def start(update, context):
     await update.message.reply_text(
@@ -27,4 +32,6 @@ def main():
     application.run_polling()
 
 if __name__ == "__main__":
+    logger.info("Iniciando bot MoodFlix...")
     main()
+    logger.info("Bot MoodFlix detenido.")

@@ -2,5 +2,4 @@ python-dotenv
 openai
 requests
 supabase
-python-telegram-bot==20.0
-httpx==0.27.2
+python-telegram-bot==20.4
