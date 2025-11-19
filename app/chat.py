@@ -1,5 +1,7 @@
 # app/chat.py
 from typing import Dict, Any, List
+import logging
+import time
 
 from .utils import (
     parse_user_intent_with_openai,
@@ -11,61 +13,52 @@ from .utils import (
     get_music_recommendations,
 )
 
+logger = logging.getLogger("moodflix")
+
 
 class RecommenderChatBot:
     def __init__(self, settings):
         self.settings = settings
-        # Guardamos intención pendiente por usuario: { user_id: parsed_intent }
+        # Estado de la conversación
         self.pending_intents: dict[str, dict] = {}
+        self.waiting_for: dict[str, str] = {}
+        # MEMORIA: última recomendación por usuario
+        self.last_recommendation: dict[str, dict] = {}
+        self.last_activity: dict[str, float] = {}
 
-    # ---------------------------
-    # Armado de respuestas finales
-    # ---------------------------
     def _build_recommendation_text(self, parsed: dict) -> str:
         tipo = parsed.get("type")
         mood = parsed.get("mood")
         strategy = parsed.get("match_strategy")
         genre_name = parsed.get("genre")
 
-        # Texto para estrategia
         if strategy == "match":
-            strategy_text = "acompañar tu estado"
+            strategy_text = "acompañar tu vibe"
         else:
-            strategy_text = "cambiar tu estado / levantarte"
+            strategy_text = "cambiar tu mood"
 
-        # Si viene género explícito, lo usamos en el encabezado
-        genre_label = f" de **{genre_name}**" if genre_name else ""
+        genre_label = f" de *{genre_name}*" if genre_name else ""
 
         # PELÍCULAS
         if tipo == "movie":
             recs = get_movie_recommendations(parsed)
             if not recs:
-                return (
-                    "Intenté buscar películas pero no encontré resultados o hubo un problema con TMDB.\n"
-                    "Verificá tu TMDB_API_KEY o probá describiéndome de otra forma qué querés ver."
-                )
+                return "Mmm, no encontré pelis 😕\nRevisá tu API key o probá otra búsqueda."
 
-            # Encabezado depende de si hay mood o solo género
             if genre_name and (mood == "neutral" or not mood):
-                title_line = f"🎬 Te recomiendo estas películas{genre_label}:"
+                title_line = f"🎬 *Pelis{genre_label}:*"
             else:
-                title_line = (
-                    f"🎬 Te recomiendo estas películas{genre_label} "
-                    f"para {strategy_text} estando **{mood}**:"
-                )
+                title_line = f"🎬 *Pelis{genre_label} para {strategy_text}:*"
 
-            lines: List[str] = [title_line]
+            lines: List[str] = [title_line, ""]
             for i, r in enumerate(recs, start=1):
-                overview = r["overview"]
-                if len(overview) > 220:
-                    overview = overview[:220] + "…"
+                overview = r["overview"][:180] + "..." if len(r["overview"]) > 180 else r["overview"]
 
                 lines.append(
-                    f"\n{i}. **{r['title']}** ({r['year']})\n"
-                    f"   Género: {r['genre']}\n"
-                    f"   Duración: {r['duration']}\n"
-                    f"   Plataformas (AR): {r['platforms']}\n"
-                    f"   Sinopsis: {overview}"
+                    f"{i}. *{r['title']}* ({r['year']})\n"
+                    f"   📁 {r['genre']} · ⏱ {r['duration']}\n"
+                    f"   📺 {r['platforms']}\n"
+                    f"   _{overview}_\n"
                 )
 
             return "\n".join(lines)
@@ -74,32 +67,22 @@ class RecommenderChatBot:
         if tipo == "series":
             recs = get_series_recommendations(parsed)
             if not recs:
-                return (
-                    "Intenté buscar series pero no encontré resultados o hubo un problema con TMDB.\n"
-                    "Verificá tu TMDB_API_KEY o probá describiéndome de otra forma qué querés ver."
-                )
+                return "No encontré series 😕\nRevisá tu API key o probá otra búsqueda."
 
             if genre_name and (mood == "neutral" or not mood):
-                title_line = f"📺 Te recomiendo estas series{genre_label}:"
+                title_line = f"📺 *Series{genre_label}:*"
             else:
-                title_line = (
-                    f"📺 Te recomiendo estas series{genre_label} "
-                    f"para {strategy_text} estando **{mood}**:"
-                )
+                title_line = f"📺 *Series{genre_label} para {strategy_text}:*"
 
-            lines: List[str] = [title_line]
+            lines: List[str] = [title_line, ""]
             for i, r in enumerate(recs, start=1):
-                overview = r["overview"]
-                if len(overview) > 220:
-                    overview = overview[:220] + "…"
+                overview = r["overview"][:180] + "..." if len(r["overview"]) > 180 else r["overview"]
 
                 lines.append(
-                    f"\n{i}. **{r['title']}** ({r['year']})\n"
-                    f"   Género: {r['genre']}\n"
-                    f"   Temporadas: {r['seasons']}, episodios: {r['episodes']}\n"
-                    f"   Duración: {r['duration']}\n"
-                    f"   Plataformas (AR): {r['platforms']}\n"
-                    f"   Sinopsis: {overview}"
+                    f"{i}. *{r['title']}* ({r['year']})\n"
+                    f"   📁 {r['genre']} · 📊 {r['seasons']} temp.\n"
+                    f"   📺 {r['platforms']}\n"
+                    f"   _{overview}_\n"
                 )
 
             return "\n".join(lines)
@@ -107,112 +90,255 @@ class RecommenderChatBot:
         # MÚSICA
         if tipo == "music":
             recs = get_music_recommendations(parsed)
-            genre_name = parsed.get("genre")
             if not recs:
-                return (
-                    "Intenté buscar música en Spotify pero no encontré resultados o hubo un problema de conexión.\n"
-                    "Verificá tus credenciales de Spotify o probá describiéndome de otra forma qué querés escuchar."
-                )
+                return "No encontré música 😕\nRevisá tus credenciales de Spotify."
 
             if genre_name:
-                header = f"🎧 Te recomiendo estas canciones de **{genre_name}** "
+                header = f"🎧 *{genre_name.title()}*"
             else:
-                header = "🎧 Te recomiendo estas canciones "
+                header = "🎧 *Tu playlist*"
 
             if mood and mood != "neutral":
-                header += f"para {strategy_text} estando **{mood}**:"
-            else:
-                header += ":"
+                header += f" · {strategy_text}"
 
-            lines: List[str] = [header]
+            lines: List[str] = [header, ""]
 
             for i, r in enumerate(recs, start=1):
                 lines.append(
-                    f"\n{i}. **{r['title']}** – {r['artist']}\n"
-                    f"   Género(s): {r['genres']}\n"
-                    f"   Escuchar en Spotify: {r['url']}"
+                    f"{i}. *{r['title']}*\n"
+                    f"   🎤 {r['artist']}\n"
+                    f"   🔗 {r['url']}\n"
                 )
 
             return "\n".join(lines)
 
-        return (
-            "Se me mezcló un poco el contexto 😅, probá pidiéndome de nuevo música, película o serie."
-        )
+        return "Mmm, algo se mezcló 😅 Probá de nuevo."
 
-    # ---------------------------
-    # Lógica principal del bot
-    # ---------------------------
     def handle_message(self, user_id: str, text: str) -> str:
-        # 1) Si ya teníamos una intención pendiente, este mensaje es la ESTRATEGIA
-        if user_id in self.pending_intents:
+        raw = text.strip()
+        lower = raw.lower()
+
+        logger.info(f"💬 Usuario {user_id}: '{raw}'")
+
+        # Limpiar actividad vieja (más de 5 minutos)
+        now = time.time()
+        if user_id in self.last_activity:
+            if now - self.last_activity[user_id] > 300:
+                self.pending_intents.pop(user_id, None)
+                self.waiting_for.pop(user_id, None)
+                self.last_recommendation.pop(user_id, None)
+        
+        self.last_activity[user_id] = now
+
+        # SALUDOS
+        if any(g in lower for g in ["hola", "holis", "buenas", "buen día", "hey", "hi"]):
+            self.pending_intents.pop(user_id, None)
+            self.waiting_for.pop(user_id, None)
+            self.last_recommendation.pop(user_id, None)
+            
+            return (
+                "¡Hola! 👋 Soy *MoodFlix*\n\n"
+                "Te recomiendo:\n"
+                "🎬 Películas · 📺 Series · 🎧 Música\n\n"
+                "Contame qué onda 😊"
+            )
+
+        # COMANDOS DE CONTINUACIÓN
+        if any(w in lower for w in ["mas", "más", "otra", "otro", "dame mas", "dame más"]):
+            if user_id in self.last_recommendation:
+                last = self.last_recommendation[user_id]
+                response_text = self._build_recommendation_text(last)
+                save_conversation_history(user_id, raw, response_text, last)
+                return response_text
+            else:
+                return "No tengo un pedido anterior 🤔\nDecime qué querés."
+
+        # CAMBIO DE TIPO ("ahora pelis", "ahora series")
+        tipo_change = None
+        if any(w in lower for w in ["ahora peli", "ahora una peli", "y peli"]):
+            tipo_change = "movie"
+        elif any(w in lower for w in ["ahora serie", "ahora una serie", "y serie"]):
+            tipo_change = "series"
+        elif any(w in lower for w in ["ahora música", "ahora musica", "y música", "y musica"]):
+            tipo_change = "music"
+
+        if tipo_change and user_id in self.last_recommendation:
+            last = self.last_recommendation[user_id].copy()
+            last["type"] = tipo_change
+            self.last_recommendation[user_id] = last
+            response_text = self._build_recommendation_text(last)
+            save_conversation_history(user_id, raw, response_text, last)
+            return response_text
+
+        # FLUJO CON ESTADO PENDIENTE
+        if user_id in self.waiting_for:
+            waiting = self.waiting_for[user_id]
             parsed = self.pending_intents[user_id]
 
-            # Intentamos inferir estrategia (match/contrast)
-            strategy = infer_strategy_with_openai(text, parsed)
-            if strategy is None:
-                strategy = detect_strategy_from_text(text)
+            # ESPERANDO TIPO
+            if waiting == "type":
+                new_parsed = parse_user_intent_with_openai(raw)
+                new_type = new_parsed.get("type")
+                
+                if new_type and new_type != "unknown":
+                    parsed["type"] = new_type
+                    mood = parsed.get("mood")
+                    genre = parsed.get("genre")
+                    
+                    if genre and (not mood or mood == "neutral"):
+                        parsed["match_strategy"] = "match"
+                        del self.waiting_for[user_id]
+                        del self.pending_intents[user_id]
+                        self.last_recommendation[user_id] = parsed
+                        
+                        response_text = self._build_recommendation_text(parsed)
+                        save_conversation_history(user_id, raw, response_text, parsed)
+                        return response_text
+                    
+                    if mood and mood != "neutral":
+                        self.waiting_for[user_id] = "strategy"
+                        
+                        tipo_texto = {"music": "música", "movie": "una peli", "series": "una serie"}.get(new_type, "contenido")
+                        
+                        response_text = (
+                            f"Dale! {tipo_texto} para tu vibe *{mood}* 😊\n\n"
+                            "¿Querés que *acompañe* o *cambie* tu mood?"
+                        )
+                        save_conversation_history(user_id, raw, response_text, parsed)
+                        return response_text
+                    
+                    parsed["match_strategy"] = "match"
+                    del self.waiting_for[user_id]
+                    del self.pending_intents[user_id]
+                    self.last_recommendation[user_id] = parsed
+                    
+                    response_text = self._build_recommendation_text(parsed)
+                    save_conversation_history(user_id, raw, response_text, parsed)
+                    return response_text
+                else:
+                    return "No caché si querés peli, serie o música 🤔"
 
-            # Además, si el usuario corrige el mood (ej: "no estoy relajada, estoy estresada"),
-            # volvemos a interpretar y si cambia el mood lo actualizamos.
-            new_parsed = parse_user_intent_with_openai(text)
-            new_mood = new_parsed.get("mood")
-            if new_mood and new_mood != "neutral" and new_mood != parsed.get("mood"):
-                parsed["mood"] = new_mood
+            # ESPERANDO MOOD
+            elif waiting == "mood":
+                new_parsed = parse_user_intent_with_openai(raw)
+                new_mood = new_parsed.get("mood")
+                
+                if new_mood and new_mood != "neutral":
+                    parsed["mood"] = new_mood
+                    self.waiting_for[user_id] = "strategy"
+                    
+                    response_text = (
+                        f"Dale, estás *{new_mood}* 😊\n\n"
+                        "¿Querés que *acompañe* o *cambie* tu mood?"
+                    )
+                    save_conversation_history(user_id, raw, response_text, parsed)
+                    return response_text
+                else:
+                    parsed["mood"] = "neutral"
+                    parsed["match_strategy"] = "match"
+                    del self.waiting_for[user_id]
+                    del self.pending_intents[user_id]
+                    self.last_recommendation[user_id] = parsed
+                    
+                    response_text = self._build_recommendation_text(parsed)
+                    save_conversation_history(user_id, raw, response_text, parsed)
+                    return response_text
 
-            if strategy is None:
-                response_text = (
-                    "No terminé de entender si querés que las recomendaciones **acompañen** "
-                    "tu estado de ánimo o que lo **cambien**.\n\n"
-                    "Podés responder algo como:\n"
-                    "- \"Que acompañe\" / \"que siga igual\"\n"
-                    "- \"Que cambie mi ánimo\" / \"algo para levantarme\""
-                )
-                save_conversation_history(user_id, text, response_text, parsed)
+            # ESPERANDO ESTRATEGIA
+            elif waiting == "strategy":
+                strategy = detect_strategy_from_text(raw)
+                
+                new_parsed = parse_user_intent_with_openai(raw)
+                new_mood = new_parsed.get("mood")
+                if new_mood and new_mood != "neutral":
+                    parsed["mood"] = new_mood
+
+                if not strategy:
+                    return (
+                        "No caché si querés que *acompañe* o *cambie* 🤔\n"
+                        "Decime: \"que acompañe\" o \"que lo cambie\""
+                    )
+
+                parsed["match_strategy"] = strategy
+                del self.waiting_for[user_id]
+                del self.pending_intents[user_id]
+                self.last_recommendation[user_id] = parsed
+
+                response_text = self._build_recommendation_text(parsed)
+                save_conversation_history(user_id, raw, response_text, parsed)
                 return response_text
 
-            parsed["match_strategy"] = strategy
-            del self.pending_intents[user_id]
-
-            response_text = self._build_recommendation_text(parsed)
-            save_conversation_history(user_id, text, response_text, parsed)
-            return response_text
-
-        # 2) NUEVO PEDIDO
-        parsed = parse_user_intent_with_openai(text)
-        tipo = parsed["type"]
-        mood = parsed["mood"]
+        # NUEVO PEDIDO
+        parsed = parse_user_intent_with_openai(raw)
+        tipo = parsed.get("type")
+        mood = parsed.get("mood")
         genre_name = parsed.get("genre")
 
-        # Si es un pedido por género (películas de terror, series de comedia, música pop, rock, etc.)
-        # y no hay mood fuerte, NO preguntamos nada → devolvemos directo.
-        if genre_name and (mood == "neutral" or not mood) and tipo in ("movie", "series", "music"):
-            parsed["match_strategy"] = "match"  # default razonable
+        logger.info(f"🧠 Parse: type={tipo}, mood={mood}, genre={genre_name}")
+
+        # CASO 1: Solo género
+        if genre_name and (not mood or mood == "neutral") and tipo in ("movie", "series", "music"):
+            parsed["match_strategy"] = "match"
+            self.last_recommendation[user_id] = parsed
             response_text = self._build_recommendation_text(parsed)
-            save_conversation_history(user_id, text, response_text, parsed)
+            save_conversation_history(user_id, raw, response_text, parsed)
             return response_text
 
-        # Si no, flujo normal: ver si ya dijo match/contrast en el mismo mensaje
-        strategy = detect_strategy_from_text(text)
+        # CASO 2: Tipo + mood
+        if tipo in ("movie", "series", "music") and mood and mood != "neutral":
+            strategy = detect_strategy_from_text(raw)
+            
+            if strategy:
+                parsed["match_strategy"] = strategy
+                self.last_recommendation[user_id] = parsed
+                response_text = self._build_recommendation_text(parsed)
+                save_conversation_history(user_id, raw, response_text, parsed)
+                return response_text
+            else:
+                self.pending_intents[user_id] = parsed
+                self.waiting_for[user_id] = "strategy"
 
-        if strategy is None:
-            # Preguntamos match vs cambiar estado y guardamos intención pendiente
+                tipo_texto = {"music": "música", "movie": "una peli", "series": "una serie"}.get(tipo, "contenido")
+
+                response_text = (
+                    f"Dale! {tipo_texto} con vibe *{mood}* 😊\n\n"
+                    "¿Querés que *acompañe* o *cambie* tu mood?"
+                )
+                save_conversation_history(user_id, raw, response_text, parsed)
+                return response_text
+
+        # CASO 3: Solo tipo
+        if tipo in ("movie", "series", "music") and (not mood or mood == "neutral"):
             self.pending_intents[user_id] = parsed
+            self.waiting_for[user_id] = "mood"
+
+            tipo_texto = {"music": "música", "movie": "una peli", "series": "una serie"}.get(tipo, "contenido")
 
             response_text = (
-                "Ok, entendí que querés "
-                f"{'música' if tipo == 'music' else 'una película' if tipo == 'movie' else 'una serie'} "
-                f"y tu estado/mood se siente más bien **{mood}**.\n\n"
-                "¿Querés que las recomendaciones **acompañen** tu estado de ánimo/actividad "
-                "(match) o que lo **cambien** (contraste, algo para levantarte/animarte)?\n"
-                "Podés responder algo como:\n"
-                "- \"Que acompañe\" / \"que siga igual\"\n"
-                "- \"Que cambie mi ánimo\" / \"algo contrario\" / \"algo para levantarme\""
+                f"Dale! Querés {tipo_texto} 😊\n\n"
+                "Contame, ¿cómo te sentís o qué estás haciendo?"
             )
-            save_conversation_history(user_id, text, response_text, parsed)
+            save_conversation_history(user_id, raw, response_text, parsed)
             return response_text
 
-        # Si ya tenemos estrategia desde el primer mensaje
-        parsed["match_strategy"] = strategy
-        response_text = self._build_recommendation_text(parsed)
-        save_conversation_history(user_id, text, response_text, parsed)
-        return response_text
+        # CASO 4: Solo mood
+        if tipo == "unknown" and mood and mood != "neutral":
+            self.pending_intents[user_id] = parsed
+            self.waiting_for[user_id] = "type"
+
+            response_text = (
+                f"Dale, estás *{mood}* 😊\n\n"
+                "¿Qué querés?\n"
+                "🎬 Peli · 📺 Serie · 🎧 Música"
+            )
+            save_conversation_history(user_id, raw, response_text, parsed)
+            return response_text
+
+        # CASO 5: No entendió
+        return (
+            "No caché qué querés 🤔\n\n"
+            "Probá:\n"
+            "• \"Pelis de terror\"\n"
+            "• \"Música para correr\"\n"
+            "• \"Estoy triste, pasame una serie\""
+        )

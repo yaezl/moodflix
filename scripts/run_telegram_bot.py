@@ -11,12 +11,24 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-async def start(update, context):
-    await update.message.reply_text(
-        "¡Hola! Soy tu bot de recomendaciones de música, pelis y series 🎧🎬\n"
-        "Contame qué vas a hacer o cómo te sentís."
-    )
+# scripts/run_telegram_bot.py
 
+def handle_message(self, user_id: str, text: str) -> str:
+    raw_text = text.strip()
+    lower = raw_text.lower()
+
+    # 1) Saludo simple → no hago lógica de recomendaciones
+    if any(g in lower for g in ["hola", "holis", "buenas", "buen día", "buen dia", "hey", "hello"]):
+        return (
+            "¡Hola! 👋 Soy *MoodFlix*.\n\n"
+            "Puedo recomendarte:\n"
+            "• 🎬 Películas\n"
+            "• 📺 Series\n"
+            "• 🎧 Música\n\n"
+            "Usando cómo te sentís, lo que estás haciendo (correr, estudiar, etc.) "
+            "o algún género que te guste.\n\n"
+        ) 
+    
 async def handle_text(update, context):
     user_id = str(update.effective_user.id)
     text = update.message.text
@@ -26,7 +38,7 @@ async def handle_text(update, context):
 def main():
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
 
-    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("start", handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     application.run_polling()
