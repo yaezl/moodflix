@@ -82,7 +82,7 @@ class ChatManager:
             state["page"] += 1
             return self._try_recommend(user_id, reason="otra_opcion")
 
-        if lower in ("chau", "chao", "me voy", "/end", "/stop"):
+        if lower in ("gracias", "gracia", "listo", "salir", "bye", "ok", "bueno", "chau", "chao", "me voy", "/end", "/stop"):
             self._reset_state(user_id)
             return "¡Gracias por usar el bot! Cuando quieras volvemos a buscar algo para ver 🍿"
 
@@ -97,7 +97,11 @@ class ChatManager:
         slots_actuales = state["slots"]
         ultima_pregunta = state["last_question"]
 
-        parsed = extract_slots_from_text(text)
+        parsed = extract_slots_from_text(
+            user_text=text,
+            last_question=ultima_pregunta,
+            prev_slots=slots_actuales,
+        )
         intent = parsed.get("intent", "other")
         new_slots = parsed.get("slots", {}) or {}
 
@@ -157,21 +161,37 @@ class ChatManager:
 
         if not generos:
             return {"key": "generos",
-                    "text": "Bien. ¿De qué onda te pinta?\nPodés decirme uno o varios géneros: comedia, terror, drama, acción, romántica, ciencia ficción, etc."}
+                    "text": "Bien. ¿De qué estilo te gustaría?\nPodés decirme uno o varios géneros: comedia, terror, drama, acción, romántica, ciencia ficción, etc."}
 
-        if tipo == "movie" and duracion_peli in (None, "", "indiferente"):
-            return {"key": "duracion_peli",
-                    "text": "¿Buscás una **peli cortita** o una **larga**?"}
-
+        # Preguntas específicas de series
         if tipo == "tv":
+
+            # 1) Percepción: Temporadas
             if temporadas in (None, "", "indiferente"):
-                return {"key": "temporadas", "text": "¿Pocas temporadas o varias?"}
+                return {
+                    "key": "temporadas",
+                    "text": (
+                        "¿Preferís series con **pocas temporadas (1–3)** o **varias temporadas (4 o más)**?\n"
+                    ),
+                }
+
+            # 2) Real: Cantidad total de capítulos
             if episodios_totales in (None, "", "indiferente"):
-                return {"key": "episodios_totales",
-                        "text": "¿Pocos capítulos o muchos?"}
+                return {
+                    "key": "episodios_totales",
+                    "text": (
+                        "¿Querés **pocos capítulos en total (menos de 30)** o **muchos capítulos (30 o más)**?"
+                    ),
+                }
+
+            # 3) Duración del capítulo
             if duracion_capitulo in (None, "", "indiferente"):
-                return {"key": "duracion_capitulo",
-                        "text": "¿Capítulos cortitos (20-30 min) o largos (40-60 min)?"}
+                return {
+                    "key": "duracion_capitulo",
+                    "text": (
+                        "¿Capítulos **cortitos (20–30 min)** o más bien **largos (40–60 min)**?"
+                    ),
+                }
 
         if novedad in (None, "", "indiferente"):
             return {"key": "novedad",
@@ -210,6 +230,115 @@ class ChatManager:
 
         recs = build_recommendations_from_tmdb(tipo, tmdb_results, slots)
 
+        # -----------------------------
+        # Reordenar según contexto social
+        # -----------------------------
+        contexto = slots.get("contexto")
+
+        def score_por_contexto(rec):
+            puntuacion = 0
+            genero_ids = rec.get("genre_ids", [])
+
+            # SOLO → puede ser más intenso o profundo
+            if contexto == "solo":
+                if 27 in genero_ids:  # terror
+                    puntuacion += 20
+                if 53 in genero_ids:  # suspenso
+                    puntuacion += 15
+                if 80 in genero_ids:  # crimen
+                    puntuacion += 10
+                if 18 in genero_ids:  # drama
+                    puntuacion += 8
+
+            # PAREJA → prioriza romance, drama, comedia
+            if contexto == "pareja":
+                if 10749 in genero_ids:  # romance
+                    puntuacion += 20
+                if 35 in genero_ids:  # comedia
+                    puntuacion += 12
+                if 18 in genero_ids:  # drama
+                    puntuacion += 10
+
+            # AMIGXS → prioriza comedia, acción, terror suave, cosas divertidas
+            if contexto == "amigxs":
+                if 35 in genero_ids:  # comedia
+                    puntuacion += 20
+                if 28 in genero_ids:  # acción
+                    puntuacion += 10
+                if 27 in genero_ids:  # terror
+                    puntuacion += 5  # pero no extremo
+                if 10759 in genero_ids:  # sci-fi & fantasy (series)
+                    puntuacion += 8
+
+            # FAMILIA → prioriza familiar, animación suave, aventura
+            if contexto == "familia":
+                if 10751 in genero_ids:  # familiar
+                    puntuacion += 20
+                if 16 in genero_ids:  # animación
+                    puntuacion += 10
+                if 12 in genero_ids:  # aventura
+                    puntuacion += 12
+                # penalización para contenido inapropiado
+                if 27 in genero_ids:  # terror
+                    puntuacion -= 50
+                if 53 in genero_ids:  # suspenso oscuro
+                    puntuacion -= 20
+
+            return puntuacion
+
+        # Ordenamos según esta puntuación
+        recs = sorted(recs, key=score_por_contexto, reverse=True)
+
+        # -----------------------------
+        # Penalizar contenido según restricciones
+        # -----------------------------
+        restricciones = slots.get("restricciones") or []
+
+        def penalizar_por_restricciones(rec):
+            score = 0
+            genre_ids = rec.get("genre_ids", [])
+
+            # No gore → fuerte penalización a terror/suspenso/crimen
+            if "no_gore" in restricciones:
+                if 27 in genre_ids: score -= 40   # terror
+                if 53 in genre_ids: score -= 30   # suspenso oscuro
+                if 80 in genre_ids: score -= 20   # crimen
+
+            # No terror
+            if "no_terror" in restricciones:
+                if 27 in genre_ids: score -= 100
+                # suspenso también puede molestar
+                if 53 in genre_ids: score -= 20
+
+            # No romance
+            if "no_romance" in restricciones:
+                if 10749 in genre_ids: score -= 50
+
+            # No sci-fi
+            if "no_scifi" in restricciones:
+                if 878 in genre_ids: score -= 40
+                if 14 in genre_ids: score -= 40
+
+            # No crimen
+            if "no_crimen" in restricciones:
+                if 80 in genre_ids: score -= 60
+
+            # No guerra
+            if "no_guerra" in restricciones:
+                if 10752 in genre_ids: score -= 60
+
+            # No animación → por si TMDB devolvió algo igual
+            if "no_animacion" in restricciones:
+                if 16 in genre_ids: score -= 100
+
+            return score
+
+        # Aplicamos penalización al ranking
+        recs = sorted(recs, key=lambda r: (
+            score_por_contexto(r) + penalizar_por_restricciones(r)
+        ), reverse=True)
+
+
         if not recs:
             return "Con lo que me contaste no encontré nada 😕. Probá cambiando algún filtro."
 
@@ -246,6 +375,9 @@ class ChatManager:
             ]
             parts.append("\n".join(block))
 
-        parts.append('Decime *"otra"* para más opciones o cambiá algún filtro.')
+        parts.append(
+            "Si querés, podés decirme *\"otra\"* para ver más opciones con los mismos gustos,\n"
+            "o cambiar algo (género, duración, cambiar a serie o peli, o decir *\"que no sea animada\"*, etc.)."
+        )
 
         return "\n".join(parts).strip()
