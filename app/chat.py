@@ -25,8 +25,12 @@ class RecommenderChatBot:
         # MEMORIA: última recomendación por usuario
         self.last_recommendation: dict[str, dict] = {}
         self.last_activity: dict[str, float] = {}
+        # TRACKING: IDs ya recomendados por usuario
+        self.recommended_ids: dict[str, set] = {}
+        # Página actual para paginación
+        self.current_page: dict[str, int] = {}
 
-    def _build_recommendation_text(self, parsed: dict) -> str:
+    def _build_recommendation_text(self, parsed: dict, user_id: str = None) -> str:
         tipo = parsed.get("type")
         mood = parsed.get("mood")
         strategy = parsed.get("match_strategy")
@@ -39,11 +43,27 @@ class RecommenderChatBot:
 
         genre_label = f" de *{genre_name}*" if genre_name else ""
 
+        # Obtener IDs ya vistos
+        seen_ids = self.recommended_ids.get(user_id, set()) if user_id else set()
+
         # PELÍCULAS
         if tipo == "movie":
-            recs = get_movie_recommendations(parsed)
+            recs = get_movie_recommendations(parsed, seen_ids=seen_ids)
             if not recs:
-                return "Mmm, no encontré pelis 😕\nRevisá tu API key o probá otra búsqueda."
+                # Si no hay más, resetear y buscar de nuevo
+                if user_id and seen_ids:
+                    self.recommended_ids[user_id] = set()
+                    recs = get_movie_recommendations(parsed, seen_ids=set())
+                
+                if not recs:
+                    return "Mmm, no encontré pelis 😕\nRevisá tu API key o probá otra búsqueda."
+
+            # Guardar IDs recomendados
+            if user_id:
+                if user_id not in self.recommended_ids:
+                    self.recommended_ids[user_id] = set()
+                for r in recs:
+                    self.recommended_ids[user_id].add(r.get("id"))
 
             if genre_name and (mood == "neutral" or not mood):
                 title_line = f"🎬 *Pelis{genre_label}:*"
@@ -65,9 +85,20 @@ class RecommenderChatBot:
 
         # SERIES
         if tipo == "series":
-            recs = get_series_recommendations(parsed)
+            recs = get_series_recommendations(parsed, seen_ids=seen_ids)
             if not recs:
-                return "No encontré series 😕\nRevisá tu API key o probá otra búsqueda."
+                if user_id and seen_ids:
+                    self.recommended_ids[user_id] = set()
+                    recs = get_series_recommendations(parsed, seen_ids=set())
+                
+                if not recs:
+                    return "No encontré series 😕\nRevisá tu API key o probá otra búsqueda."
+
+            if user_id:
+                if user_id not in self.recommended_ids:
+                    self.recommended_ids[user_id] = set()
+                for r in recs:
+                    self.recommended_ids[user_id].add(r.get("id"))
 
             if genre_name and (mood == "neutral" or not mood):
                 title_line = f"📺 *Series{genre_label}:*"
@@ -89,9 +120,20 @@ class RecommenderChatBot:
 
         # MÚSICA
         if tipo == "music":
-            recs = get_music_recommendations(parsed)
+            recs = get_music_recommendations(parsed, seen_ids=seen_ids)
             if not recs:
-                return "No encontré música 😕\nRevisá tus credenciales de Spotify."
+                if user_id and seen_ids:
+                    self.recommended_ids[user_id] = set()
+                    recs = get_music_recommendations(parsed, seen_ids=set())
+                
+                if not recs:
+                    return "No encontré música 😕\nRevisá tus credenciales de Spotify."
+
+            if user_id:
+                if user_id not in self.recommended_ids:
+                    self.recommended_ids[user_id] = set()
+                for r in recs:
+                    self.recommended_ids[user_id].add(r.get("id"))
 
             if genre_name:
                 header = f"🎧 *{genre_name.title()}*"
@@ -135,6 +177,7 @@ class RecommenderChatBot:
             self.pending_intents.pop(user_id, None)
             self.waiting_for.pop(user_id, None)
             self.last_recommendation.pop(user_id, None)
+            self.recommended_ids.pop(user_id, None)  # Limpiar historial
             
             return (
                 "¡Hola! 👋 Soy *MoodFlix*\n\n"
@@ -147,7 +190,7 @@ class RecommenderChatBot:
         if any(w in lower for w in ["mas", "más", "otra", "otro", "dame mas", "dame más"]):
             if user_id in self.last_recommendation:
                 last = self.last_recommendation[user_id]
-                response_text = self._build_recommendation_text(last)
+                response_text = self._build_recommendation_text(last, user_id)
                 save_conversation_history(user_id, raw, response_text, last)
                 return response_text
             else:
@@ -165,8 +208,10 @@ class RecommenderChatBot:
         if tipo_change and user_id in self.last_recommendation:
             last = self.last_recommendation[user_id].copy()
             last["type"] = tipo_change
+            # Resetear IDs vistos al cambiar de tipo
+            self.recommended_ids.pop(user_id, None)
             self.last_recommendation[user_id] = last
-            response_text = self._build_recommendation_text(last)
+            response_text = self._build_recommendation_text(last, user_id)
             save_conversation_history(user_id, raw, response_text, last)
             return response_text
 
@@ -191,7 +236,7 @@ class RecommenderChatBot:
                         del self.pending_intents[user_id]
                         self.last_recommendation[user_id] = parsed
                         
-                        response_text = self._build_recommendation_text(parsed)
+                        response_text = self._build_recommendation_text(parsed, user_id)
                         save_conversation_history(user_id, raw, response_text, parsed)
                         return response_text
                     

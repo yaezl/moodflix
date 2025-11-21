@@ -317,9 +317,12 @@ def _tmdb_get_providers(kind: str, tmdb_id: int, region: str = "AR") -> str:
         return "No disponible"
 
 
-def get_movie_recommendations(parsed: Dict[str, Any], limit: int = 3) -> List[Dict[str, Any]]:
+def get_movie_recommendations(parsed: Dict[str, Any], limit: int = 3, seen_ids: set = None) -> List[Dict[str, Any]]:
     if not settings.tmdb_api_key:
         return []
+
+    if seen_ids is None:
+        seen_ids = set()
 
     region = settings.region.upper()
     genre_name = parsed.get("genre")
@@ -335,23 +338,45 @@ def get_movie_recommendations(parsed: Dict[str, Any], limit: int = 3) -> List[Di
             genre_id = MOVIE_GENRES["comedia"]
 
     try:
-        params = {
-            "language": "es-ES",
-            "region": region,
-            "sort_by": "popularity.desc",
-            "include_adult": "false",
-        }
-        if genre_id:
-            params["with_genres"] = genre_id
+        # Intentar con múltiples páginas si es necesario
+        all_results = []
+        for page in range(1, 6):  # Buscar en hasta 5 páginas
+            params = {
+                "language": "es-ES",
+                "region": region,
+                "sort_by": "popularity.desc",
+                "include_adult": "false",
+                "page": page,
+            }
+            if genre_id:
+                params["with_genres"] = genre_id
 
-        data = _tmdb_get("/discover/movie", params)
-        results = data.get("results", [])[:limit * 2]
+            data = _tmdb_get("/discover/movie", params)
+            results = data.get("results", [])
+            
+            # Filtrar los que ya vimos
+            new_results = [r for r in results if r["id"] not in seen_ids]
+            all_results.extend(new_results)
+            
+            # Si ya tenemos suficientes, parar
+            if len(all_results) >= limit * 3:
+                break
+
+        if not all_results:
+            return []
+
+        # Randomizar para variar
+        import random
+        random.shuffle(all_results)
+        
+        results_to_fetch = all_results[:limit]
         recs = []
 
-        for r in results:
+        for r in results_to_fetch:
             details = _tmdb_get(f"/movie/{r['id']}", {"language": "es-ES"})
             
             recs.append({
+                "id": r["id"],  # Importante: guardar ID
                 "title": details.get("title", "Sin título"),
                 "overview": details.get("overview", "Sin sinopsis"),
                 "genre": ", ".join(g["name"] for g in details.get("genres", [])[:2]) or "N/D",
@@ -359,9 +384,6 @@ def get_movie_recommendations(parsed: Dict[str, Any], limit: int = 3) -> List[Di
                 "year": details.get("release_date", "")[:4] or "N/D",
                 "platforms": _tmdb_get_providers("movie", r["id"], region),
             })
-
-            if len(recs) >= limit:
-                break
 
         return recs
     except Exception as e:
