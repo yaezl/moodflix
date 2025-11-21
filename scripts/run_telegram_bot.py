@@ -1,49 +1,88 @@
 # scripts/run_telegram_bot.py
-import logging
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
-from app import bot
-from app.config import settings
 
+import logging
+
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    CommandHandler,
+    ContextTypes,
+    filters,
+)
+
+from app.config import settings
+from app.chat import ChatManager
+
+# --------------------------------
+# Logging básico
+# --------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logger = logging.getLogger("moodflix")
 
-logger = logging.getLogger(__name__)
+# --------------------------------
+# Instancia global del ChatManager
+# --------------------------------
+chat = ChatManager()
 
-# scripts/run_telegram_bot.py
 
-def handle_message(self, user_id: str, text: str) -> str:
-    raw_text = text.strip()
-    lower = raw_text.lower()
+# --------------------------------
+# Handlers
+# --------------------------------
 
-    # 1) Saludo simple → no hago lógica de recomendaciones
-    if any(g in lower for g in ["hola", "holis", "buenas", "buen día", "buen dia", "hey", "hello"]):
-        return (
-            "¡Hola! 👋 Soy *MoodFlix*.\n\n"
-            "Puedo recomendarte:\n"
-            "• 🎬 Películas\n"
-            "• 📺 Series\n"
-            "• 🎧 Música\n\n"
-            "Usando cómo te sentís, lo que estás haciendo (correr, estudiar, etc.) "
-            "o algún género que te guste.\n\n"
-        ) 
-    
-async def handle_text(update, context):
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Maneja el comando /start y /reset.
+    Le pasamos el texto '/start' al ChatManager
+    para que use su propia lógica de bienvenida.
+    """
     user_id = str(update.effective_user.id)
-    text = update.message.text
-    response = bot.handle_message(user_id, text)
-    await update.message.reply_text(response)
+    logger.info("📲 /start de user_id=%s", user_id)
 
-def main():
+    response = chat.handle_message(user_id, "/start")
+    await update.message.reply_text(response, parse_mode="Markdown")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Maneja cualquier mensaje de texto que NO sea comando.
+    """
+    user_id = str(update.effective_user.id)
+    text = update.message.text or ""
+    logger.info("📩 Mensaje de %s: %s", user_id, text)
+
+    response = chat.handle_message(user_id, text)
+    await update.message.reply_text(response, parse_mode="Markdown")
+
+
+# --------------------------------
+# Función principal
+# --------------------------------
+
+def main() -> None:
+    logger.info("🚀 Iniciando bot MoodFlix...")
+
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
 
-    application.add_handler(CommandHandler("start", handle_message))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # Comandos
+    application.add_handler(CommandHandler("start", handle_start))
+    application.add_handler(CommandHandler("reset", handle_start))
+    application.add_handler(CommandHandler("reiniciar", handle_start))
 
+    # Mensajes de texto "normales"
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+    )
+
+    logger.info("🤖 Bot MoodFlix listo. Esperando mensajes...")
     application.run_polling()
 
+
 if __name__ == "__main__":
-    logger.info("Iniciando bot MoodFlix...")
     main()
-    logger.info("Bot MoodFlix detenido.")
