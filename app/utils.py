@@ -452,23 +452,33 @@ def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 
     if content_type == "movie":
         dur = slots.get("duracion_peli")
         if dur == "corta":
+            # Peli cortita
             params["with_runtime.lte"] = 100
+            # Evitamos cortos muy breves
+            params["with_runtime.gte"] = 60
         elif dur == "larga":
+            # Peli larga
             params["with_runtime.gte"] = 130
+        else:
+            params["with_runtime.gte"] = 60
 
     # -----------------------------
     # Filtro de fama
     # -----------------------------
     fama = slots.get("fama")
     if fama == "conocida":
+        # Pelis/series conocidas → mucha gente las vio
         params["sort_by"] = "popularity.desc"
         params["vote_count.gte"] = 500
     elif fama == "joyita":
+        # Joyita poco vista pero bien puntuada
         params["sort_by"] = "vote_average.desc"
         params["vote_count.gte"] = 50
         params["vote_count.lte"] = 2000
     else:
+        # Fama indiferente → evitamos basura de TMDB
         params["sort_by"] = "vote_average.desc"
+        params["vote_count.gte"] = 100
 
     # -----------------------------
     # Construcción del endpoint final
@@ -561,7 +571,7 @@ def format_providers_message(providers: Dict[str, Any], content_type: ContentTyp
 
 
 # ------------------------------
-# Recomendar a partir de resultados TMDB
+# Recomendar a partir de resultados TMDB (con filtros de calidad)
 # ------------------------------
 
 def build_recommendations_from_tmdb(
@@ -569,65 +579,84 @@ def build_recommendations_from_tmdb(
     tmdb_results: Dict[str, Any],
     slots: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """
-    A partir de los resultados crudos de TMDB, arma una lista de recomendaciones
-    con detalles y plataformas de Argentina.
 
-    Devuelve una lista de dicts:
-    {
-      "id": int,
-      "title": str,
-      "overview": str,
-      "genres": str,
-      "year": str,
-      "duration": str,        // runtime o duración por capítulo
-      "seasons": int | None,  // solo series
-      "episodes": int | None, // solo series
-      "providers_text": str,  // texto ya listo para mostrar
-    }
-    """
     results = tmdb_results.get("results", []) or []
     if not results:
         return []
 
     max_recs = int(slots.get("cantidad_recs") or 1)
-    max_recs = max(1, min(max_recs, 5))  # por las dudas
+    max_recs = max(1, min(max_recs, 5))
 
     recs: List[Dict[str, Any]] = []
 
     for item in results:
+
         tmdb_id = item.get("id")
         if not tmdb_id:
             continue
 
-        # Detalles
+        # ---------------------------------------
+        # 1) Obtener detalles completos
+        # ---------------------------------------
         path = f"/movie/{tmdb_id}" if content_type == "movie" else f"/tv/{tmdb_id}"
         details = _tmdb_get(path, {"language": TMDB_LANG})
 
+        if not details:
+            continue
+
+        # ---------------------------------------
+        # 2) FILTROS DE CALIDAD (los 3 pedidos)
+        # ---------------------------------------
+
+        # A) Mínimo de votos (para evitar basuras)
+        vote_count = int(details.get("vote_count") or 0)
+        if vote_count < 50:   # 50 es un buen mínimo global
+            continue
+
+        # B) Sinopsis válida
+        overview = (details.get("overview") or "").strip()
+        if not overview or overview in ("", "Sin sinopsis disponible."):
+            continue
+
+        # C) Duración mínima (para evitar cortos, trailers, etc)
+        if content_type == "movie":
+            runtime = details.get("runtime")
+            if runtime is None or runtime < 40:   # menos de 40 min = cortos o trailers
+                continue
+        else:  # tv
+            episodes = details.get("number_of_episodes") or 0
+            if episodes < 2:   # evita "series" de 1 episodio o especiales
+                continue
+
+        # ---------------------------------------
+        # 3) Formatear datos bonitos
+        # ---------------------------------------
         if content_type == "movie":
             title = details.get("title") or details.get("original_title") or "Sin título"
             year = (details.get("release_date") or "")[:4] or "N/D"
-            runtime = details.get("runtime")
-            duration = f"{runtime} min" if runtime else "Duración N/D"
+            runtime = details.get("runtime") or 0
+            duration = f"{runtime} min"
+            seasons = None
+            episodes = None
         else:
             title = details.get("name") or details.get("original_name") or "Sin título"
             year = (details.get("first_air_date") or "")[:4] or "N/D"
             runtimes = details.get("episode_run_time") or []
             duration = f"{runtimes[0]} min/episodio" if runtimes else "Duración N/D"
-
-        overview = details.get("overview") or "Sin sinopsis disponible."
-        genres_detail = details.get("genres") or []
-        genres_text = ", ".join(g.get("name", "") for g in genres_detail[:3]) or "Género N/D"
-
-        seasons = None
-        episodes = None
-        if content_type == "tv":
             seasons = details.get("number_of_seasons")
             episodes = details.get("number_of_episodes")
 
+        # Géneros
+        genres_detail = details.get("genres") or []
+        genres_text = ", ".join(g.get("name", "") for g in genres_detail[:3]) or "Género N/D"
+
+        # Plataformas en Argentina
         providers = get_watch_providers(content_type, tmdb_id)
         providers_text = format_providers_message(providers, content_type)
 
+        # ---------------------------------------
+        # 4) Agregar recomendación final
+        # ---------------------------------------
         recs.append(
             {
                 "id": tmdb_id,
@@ -646,3 +675,4 @@ def build_recommendations_from_tmdb(
             break
 
     return recs
+
