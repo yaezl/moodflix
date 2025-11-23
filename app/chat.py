@@ -192,14 +192,22 @@ class ChatManager:
                         "¿Capítulos **cortitos (20–30 min)** o más bien **largos (40–60 min)**?"
                     ),
                 }
-
+        # Pregunta específica de películas
+        if tipo == "movie":
+            if duracion_peli in (None, "", ""):
+                return {
+                    "key": "duracion_peli",
+                    "text": "¿Preferís una peli **corta (menos de 100 min)** o **larga (más de 130 min)**?"
+                }
+            
+        # Preguntas generales
         if novedad in (None, "", "indiferente"):
             return {"key": "novedad",
                     "text": "¿Preferís algo **nuevo** o también te va algún **clásico**?"}
 
         if contexto in (None, ""):
             return {"key": "contexto",
-                    "text": "¿Lo vas a ver solo, con pareja, con amigxs o en familia?"}
+                    "text": "¿Lo vas a ver solo, con pareja, con amigos/as o en familia?"}
 
         if fama in (None, "", "indiferente"):
             return {"key": "fama",

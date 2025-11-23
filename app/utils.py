@@ -1,6 +1,6 @@
 # app/utils.py
 
-from typing import Dict, Any, List, Literal
+from typing import Dict, Any, List, Literal, Optional
 from pathlib import Path
 import json
 import time
@@ -63,12 +63,9 @@ def save_conversation_history(
 # Groq – helpers
 # ------------------------------
 
-def groq_chat(system_prompt: str, user_prompt: str, temperature: float = 0.6) -> str:
-    """
-    Llama al modelo de Groq y devuelve el contenido de la respuesta.
-    Usalo cuando querés una respuesta en texto libre.
-    """
-    logger.debug("🤖 GROQ chat → %s...", user_prompt[:60])
+def groq_chat(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
+    # 🔍 Log para que el profe vea el request a Groq
+    logger.info("📡 Request a Groq → %s...", user_prompt[:80])
 
     resp = groq_client.chat.completions.create(
         model=settings.llm_model,
@@ -77,12 +74,15 @@ def groq_chat(system_prompt: str, user_prompt: str, temperature: float = 0.6) ->
             {"role": "user", "content": user_prompt},
         ],
         temperature=temperature,
+        max_tokens=512,
     )
-    content = resp.choices[0].message.content or ""
-    content = content.strip()
-    logger.debug("🤖 GROQ chat ← %s...", content[:60])
-    return content
 
+    content = resp.choices[0].message.content
+
+    # 🔍 Log para que el profe vea la respuesta de Groq
+    logger.info("📡 Respuesta de Groq ← %s...", content[:80])
+
+    return content
 
 def groq_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
     """
@@ -112,23 +112,6 @@ def groq_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
             preview = preview[:200] + "..."
         logger.warning("⚠️ No se pudo parsear JSON desde Groq. Respuesta (inicio): %s", preview)
         return {}
-
-    """
-    Igual que groq_chat, pero asumiendo que el modelo responde SOLO JSON.
-    Si falla el parseo, devuelve {}.
-    """
-    content = groq_chat(system_prompt, user_prompt, temperature=0.0)
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning("⚠️ No se pudo parsear JSON desde Groq. Respuesta: %s", content)
-        return {}
-
-
-from typing import Dict, Any, Optional
-import json
-import re
-...
 
 def extract_slots_from_text(
     user_text: str,
@@ -373,7 +356,6 @@ Si el usuario menciona varias cosas, combiná en la lista, por ejemplo:
 "una peli de guerra basada en hechos reales"
 → tematicas: ["guerra", "hechos_reales"]
 
-
 Devolvé SIEMPRE solo el JSON, sin texto adicional ni ```.
 """
 
@@ -385,30 +367,65 @@ Devolvé SIEMPRE solo el JSON, sin texto adicional ni ```.
     intent = data.get("intent", "other")
     slots = data.get("slots", {}) or {}
 
+    if not last_question:
+        for key in (
+            "duracion_peli",
+            "novedad",
+            "contexto",
+            "fama",
+            "temporadas",
+            "episodios_totales",
+            "duracion_capitulo",
+        ):
+            if slots.get(key) == "indiferente":
+                slots[key] = None
+
     # Aseguramos campos mínimos
     if "cantidad_recs" not in slots:
         slots["cantidad_recs"] = 1
+    if "tematicas" not in slots:
+        slots["tematicas"] = []
+    if "restricciones" not in slots:
+        slots["restricciones"] = []
 
     return {"intent": intent, "slots": slots}
 
 
-def merge_slots(current: Dict[str, Any], new_slots: Dict[str, Any]) -> Dict[str, Any]:
+def merge_slots(prev_slots: Dict[str, Any] | None,
+                new_slots: Dict[str, Any] | None) -> Dict[str, Any]:
     """
-    Mezcla preferencias nuevas con las ya existentes.
-    Si en new_slots hay un valor no vacío/distinto de 'indiferente', pisa al actual.
+    Fusiona los slots anteriores con los nuevos.
+
+    Reglas:
+    - None, "", [] => se ignoran siempre.
+    - "indiferente":
+        * si el slot estaba vacío -> se guarda "indiferente"
+        * si ya había un valor concreto -> se mantiene el anterior.
+    - cualquier otro valor pisa al anterior.
     """
-    if not current:
-        return new_slots.copy()
+    merged: Dict[str, Any] = dict(prev_slots or {})
 
-    merged = current.copy()
+    if not new_slots:
+        return merged
 
-    for key, value in new_slots.items():
-        if value in (None, "", [], "indiferente"):
+    for key, new_val in new_slots.items():
+        old_val = merged.get(key)
+
+        # Ignorar valores realmente vacíos
+        if new_val in (None, "", []):
             continue
-        merged[key] = value
+
+        # Manejo especial de "indiferente"
+        if new_val == "indiferente":
+            if old_val in (None, "", []):
+                merged[key] = "indiferente"
+            # si ya había algo, no lo pisamos
+            continue
+
+        # Para cualquier otro valor, pisamos
+        merged[key] = new_val
 
     return merged
-
 
 # ------------------------------
 # TMDB – géneros y requests
@@ -485,15 +502,18 @@ def _tmdb_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     data = resp.json()
     return data
 
-
 def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 1) -> Dict[str, Any]:
     """
     Hace una búsqueda en TMDB usando los slots del usuario.
     No elige aún la mejor recomendación, solo trae resultados crudos.
     """
+
     restricciones = slots.get("restricciones") or []
-    
-    # Mapeo de restricciones a IDs de géneros TMDB
+    tematicas = slots.get("tematicas") or []
+
+    # -----------------------------
+    # Mapeos de restricciones → géneros TMDB
+    # -----------------------------
     restriccion_a_generos = {
         "no_animacion": ["16"],
         "no_terror": ["27"],
@@ -503,16 +523,32 @@ def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 
         "no_guerra": ["10752"],
     }
 
-    # Armamos parámetro without_genres si corresponde
-    without = []
+    # -----------------------------
+    # Mapeos temáticos → búsqueda textual en TMDB
+    # -----------------------------
+    tema_a_query = {
+        "sobrenatural": "supernatural",
+        "vampiros": "vampire",
+        "hombres_lobo": "werewolf",
+        "doctores": "doctor hospital",
+        "abogados": "lawyer courtroom",
+        "guerra": "war soldier",
+        "amigos": "friends friendship",
+        "carreras_autos": "car racing",
+        "hechos_reales": "based on true story",
+    }
 
+    # -----------------------------
+    # Convertimos restricciones → géneros excluidos
+    # -----------------------------
+    without = []
     for r in restricciones:
         if r in restriccion_a_generos:
             without.extend(restriccion_a_generos[r])
 
-    if without:
-        params["without_genres"] = ",".join(without)
-
+    # -----------------------------
+    # Construcción del diccionario base de params
+    # -----------------------------
     params: Dict[str, Any] = {
         "language": TMDB_LANG,
         "region": settings.region.upper(),
@@ -520,17 +556,33 @@ def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 
         "page": page,
     }
 
-    # Si el usuario pidió "no animación", excluimos el género Animation (id 16 en TMDB)
-    if "no_animacion" in restricciones:
-        params["without_genres"] = "16"
+    # Aplicar exclusiones de géneros
+    if without:
+        params["without_genres"] = ",".join(without)
 
-    # Géneros
+    # -----------------------------
+    # Temáticas → búsqueda textual
+    # -----------------------------
+    query_text = ""
+    if tematicas:
+        partes = []
+        for tema in tematicas:
+            if tema in tema_a_query:
+                partes.append(tema_a_query[tema])
+        if partes:
+            query_text = " ".join(partes)
+
+    # -----------------------------
+    # Filtros de géneros
+    # -----------------------------
     generos = slots.get("generos") or []
     genre_ids = _resolve_genre_ids(content_type, generos)
     if genre_ids:
         params["with_genres"] = ",".join(str(g) for g in genre_ids)
 
-    # Novedad
+    # -----------------------------
+    # Filtro de novedad
+    # -----------------------------
     novedad = slots.get("novedad")
     if content_type == "movie":
         if novedad == "nuevo":
@@ -543,7 +595,9 @@ def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 
         elif novedad == "clasico":
             params["first_air_date.lte"] = "2005-12-31"
 
-    # Duración película
+    # -----------------------------
+    # Duración de película
+    # -----------------------------
     if content_type == "movie":
         dur = slots.get("duracion_peli")
         if dur == "corta":
@@ -551,7 +605,9 @@ def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 
         elif dur == "larga":
             params["with_runtime.gte"] = 130
 
-    # Fama (popularidad)
+    # -----------------------------
+    # Filtro de fama
+    # -----------------------------
     fama = slots.get("fama")
     if fama == "conocida":
         params["sort_by"] = "popularity.desc"
@@ -563,11 +619,20 @@ def discover_tmdb(content_type: ContentType, slots: Dict[str, Any], page: int = 
     else:
         params["sort_by"] = "vote_average.desc"
 
-    # Llamar a TMDB
-    path = "/discover/movie" if content_type == "movie" else "/discover/tv"
+    # -----------------------------
+    # Construcción del endpoint final
+    # -----------------------------
+    if query_text:
+        path = "/search/movie" if content_type == "movie" else "/search/tv"
+        params["query"] = query_text
+    else:
+        path = "/discover/movie" if content_type == "movie" else "/discover/tv"
+
+    # -----------------------------
+    # Llamada final a TMDB
+    # -----------------------------
     data = _tmdb_get(path, params)
     return data
-
 
 # ------------------------------
 # TMDB – plataformas en Argentina
