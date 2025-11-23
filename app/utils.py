@@ -1,5 +1,3 @@
-# app/utils.py
-
 from typing import Dict, Any, List, Literal, Optional
 from pathlib import Path
 import json
@@ -64,7 +62,7 @@ def save_conversation_history(
 # ------------------------------
 
 def groq_chat(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
-    # 🔍 Log para que el profe vea el request a Groq
+
     logger.info("📡 Request a Groq → %s...", user_prompt[:80])
 
     resp = groq_client.chat.completions.create(
@@ -79,7 +77,6 @@ def groq_chat(system_prompt: str, user_prompt: str, temperature: float = 0.2) ->
 
     content = resp.choices[0].message.content
 
-    # 🔍 Log para que el profe vea la respuesta de Groq
     logger.info("📡 Respuesta de Groq ← %s...", content[:80])
 
     return content
@@ -92,21 +89,18 @@ def groq_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
     """
     content = groq_chat(system_prompt, user_prompt, temperature=0.0)
 
-    # Limpieza básica de fences ```json ... ```
     cleaned = content.strip()
 
-    # Caso: ```json\n{ ... }\n```
     if cleaned.startswith("```"):
-        # sacamos el bloque exterior de ```
-        # nos quedamos con lo de adentro
-        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)   # saca ``` o ```json al principio
-        cleaned = re.sub(r"\s*```$", "", cleaned)            # saca ``` al final
+
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)  
+        cleaned = re.sub(r"\s*```$", "", cleaned)   
 
     try:
         data = json.loads(cleaned)
         return data
     except json.JSONDecodeError:
-        # si sigue fallando, avisamos pero recortando el chorizo
+
         preview = cleaned.replace("\n", " ")
         if len(preview) > 200:
             preview = preview[:200] + "..."
@@ -125,15 +119,15 @@ def extract_slots_from_text(
     """
     prev_slots = prev_slots or {}
     last_question = last_question or "ninguna (podés inferir por el mensaje)"
+    prev_slots_json = json.dumps(prev_slots, ensure_ascii=False)
 
-    system_prompt = f"""
-Sos un asistente que SOLO devuelve JSON con este formato:
+    system_prompt = """Sos un asistente que SOLO devuelve JSON con este formato:
 
 {{
   "intent": "recommendation" | "answer" | "other",
   "slots": {{
     "tipo_contenido": "movie" | "tv" | "indiferente" | null,
-    "generos": [ "comedia", "terror", "drama", ... ],
+    "generos": ["comedia", "terror", "drama", ...],
     "tono": "liviano" | "intenso" | "emocional" | "indiferente" | null,
     "novedad": "nuevo" | "clasico" | "indiferente" | null,
     "duracion_peli": "corta" | "larga" | "indiferente" | null,
@@ -151,213 +145,81 @@ Sos un asistente que SOLO devuelve JSON con este formato:
 }}
 
 Contexto de la conversación:
-- Última pregunta que se le hizo al usuario (en texto humano, no clave interna): "{last_question}".
-- Slots actuales (lo que ya sabemos): {json.dumps(prev_slots, ensure_ascii=False)}.
+- Última pregunta: "{last_question}"
+- Slots actuales: {prev_slots_json}
 
-REGLAS IMPORTANTES:
+REGLAS:
 
-1. Si el usuario responde con algo muy corto (por ejemplo "pocas", "varias", "largos", "cortos",
-   "conocida", "clásico", "nuevo", "con amigxs", etc.), interpretalo como
-   RESPUESTA DIRECTA a la última pregunta.
-
-   Ejemplos:
+1. Respuestas cortas a preguntas:
    - Pregunta: "¿Pocas temporadas o varias?" → usuario: "pocas" → "temporadas": "pocas"
    - Pregunta: "¿Pocos capítulos o muchos?" → usuario: "pocos" → "episodios_totales": "pocos"
-   - Pregunta: "Capítulos cortitos (20-30 min) o largos (40-60 min)?" → "largos" → "duracion_capitulo": "largos"
-   - Pregunta: "¿Algo muy conocido o una joyita poco vista?" → "bastante conocido" → "fama": "conocida"
-   - Pregunta: "¿Lo vas a ver solo, con pareja, con amigxs o en familia?" → "eee con amigxs" → "contexto": "amigxs"
-   - Pregunta: "¿Preferís algo nuevo o también te va algún clásico?" → "algo clásico" → "novedad": "clasico"
+   - Pregunta: "¿Capítulos cortos o largos?" → usuario: "largos" → "duracion_capitulo": "largos"
+   - Pregunta: "¿Muy conocido o poco vista?" → usuario: "bastante conocido" → "fama": "conocida"
+   - Pregunta: "¿Solo, pareja, amigos o familia?" → usuario: "amigxs" → "contexto": "amigxs"
 
-2. Aceptá SINÓNIMOS en español:
-   - "pocas", "una temporada", "cortita en temporadas" → "pocas"
-   - "varias", "muchas", "larguita de temporadas" → "varias"
-   - "cortos", "cortitos", "episodios cortos", "capítulos cortos" → "cortos"
-   - "largos", "capítulos largos", "episodios largos" → "largos"
-   - "nuevo", "moderno", "de ahora", "reciente", "actual" → "nuevo"
-   - "clásico", "viejo", "antiguo pero bueno" → "clasico"
-   - "conocida", "popular", "famosa", "muy conocida" → "conocida"
-   - "joyita", "poco conocida", "joya oculta", "desconocida" → "joyita"
+2. Sinónimos aceptados:
+   - "pocas", "una temporada", "corta" → "pocas"
+   - "varias", "muchas", "larga" → "varias"
+   - "cortos", "cortitos", "20 minutos" → "cortos"
+   - "largos", "45 minutos", "una hora" → "largos"
+   - "nuevo", "moderno", "reciente" → "nuevo"
+   - "clásico", "viejo", "antiguo" → "clasico"
+   - "conocida", "popular", "famosa" → "conocida"
+   - "joyita", "poco conocida", "joya oculta" → "joyita"
 
-3. Si ya sabemos el tipo de contenido en slots anteriores (por ejemplo "movie" o "tv"),
-   usalo como contexto para interpretar la respuesta del usuario.
+3. Indiferencia:
+   Cuando el usuario diga: "me da igual", "indiferente", "no sé", "cualquiera", "como quieras", 
+   "lo que vos digas", "no tengo preferencia", "sin preferencia", "me es indistinto", etc.
+   → Asigna el slot correspondiente a "indiferente"
+   
+   Ejemplos:
+   - Pregunta: "¿Pocas temporadas o varias?" → usuario: "me da igual" → "temporadas": "indiferente"
+   - Pregunta: "¿Preferís nuevo o clásico?" → usuario: "cualquiera" → "novedad": "indiferente"
 
-4. "intent":
-   - "recommendation": cuando el usuario pide que le recomiendes algo o cambia de tipo de contenido
-     (ej: "recomendame una peli", "ahora quiero una serie").
-   - "answer": cuando está respondiendo una de tus preguntas (duración, temporadas, etc.).
-   - "other": cuando habla de algo que no tiene que ver con la recomendación.
+4. Intent:
+   - "recommendation": cuando pide que recomiende algo o cambia de tipo (peli/serie)
+   - "answer": cuando responde una de tus preguntas
+   - "other": cuando habla de algo no relacionado
 
-5. Interpretación de indiferencia:
+5. IMPORTANTE - SOLO INCLUYE SLOTS QUE EL USUARIO MENCIONÓ:
+   - NO completes automáticamente con "indiferente" los slots que no aparecen en el mensaje.
+   - Si el usuario solo dice "terror", devuelve SOLO:
+     {{
+       "intent": "answer",
+       "slots": {{
+         "generos": ["terror"]
+       }}
+     }}
+   - NO devuelvas "novedad", "duracion_peli", "fama", etc. si el usuario no las mencionó.
 
-Cuando el usuario diga cosas como: 
-"me da igual", "indiferente", "no sé", "nose", "cualquiera", 
-"como quieras", "lo que vos digas", "no tengo preferencia", 
-"sin preferencia", "mmm cualquiera", "mmm da igual", 
-"ninguna preferencia", "me es indistinto", "da igual", 
-interpretalo como RESPUESTA DIRECTA a la última pregunta.
+6. Restricciones (si el usuario las menciona):
+   - "no animada", "sin animación" → "restricciones": ["no_animacion"]
+   - "no terror", "sin miedo" → "restricciones": ["no_terror"]
+   - "no gore", "no sangre" → "restricciones": ["no_gore"]
+   - "no romance", "sin romance" → "restricciones": ["no_romance"]
+   - "no sci-fi", "sin fantasía" → "restricciones": ["no_scifi"]
+   - "no crimen", "no policiales" → "restricciones": ["no_crimen"]
+   - "no guerra", "no bélicas" → "restricciones": ["no_guerra"]
 
-En ese caso, asigná el slot correspondiente a:
-"indiferente"
+7. Contexto social (si el usuario lo menciona):
+   - "solo", "sola", "solito" → "contexto": "solo"
+   - "pareja", "novio", "novia" → "contexto": "pareja"
+   - "amigxs", "amigos", "mis amigas" → "contexto": "amigxs"
+   - "familia", "familiar" → "contexto": "familia"
 
-Ejemplos concretos:
-- Pregunta: "¿Pocas temporadas (1–3) o varias (4+)?"
-  Usuario: "me da igual" 
-  → temporadas: "indiferente"
-
-- Pregunta: "¿Pocos capítulos (menos de 30) o muchos (30+)?"
-  Usuario: "cualquiera" 
-  → episodios_totales: "indiferente"
-
-- Pregunta: "¿Capítulos cortitos (20–30 min) o largos (40–60 min)?"
-  Usuario: "no sé"
-  → duracion_capitulo: "indiferente"
-
-- Pregunta: "¿Preferís algo nuevo o un clásico?"
-  Usuario: "como quieras"
-  → novedad: "indiferente"
-
-- Pregunta: "¿Algo muy conocido o una joyita?"
-  Usuario: "mmm cualquiera"
-  → fama: "indiferente"   
-
-6. Interpretación de temporadas:
-- "pocas", "1 temporada", "una temporada", "dos temporadas", "tres", 
-  "entre 1 y 3", "1–3", "temporadas cortas", 
-  "poquitas temporadas" 
-  → temporadas: "pocas"
-
-- "varias", "muchas", "4 temporadas", "más de tres", "4 o más", "4+", 
-  "temporadas largas", "bocha de temporadas", 
-  "varias temporadas"
-  → temporadas: "varias"
-
-7. Interpretación de cantidad total de capítulos:
-- "pocos capítulos", "menos de 30", "serie cortita", "pocos episodios",
-  "rápida de ver", "liviana", "capítulos en total pocos"
-  → episodios_totales: "pocos"
-
-- "muchos capítulos", "más de 30", "bocha de episodios", 
-  "larga para engancharse", "muchos episodios",
-  "capítulos en total muchos"
-  → episodios_totales: "muchos"
-
-8. Interpretación de duración por capítulo:
-- "cortos", "cortitos", "20 minutos", "media hora", 
-  "capítulos chicos", "rápidos"
-  → duracion_capitulo: "cortos"
-
-- "largos", "45 minutos", "una hora", "capítulos largos",
-  "episodios largos", "capítulos de una hora"
-  → duracion_capitulo: "largos"
-
-9. Interpretación de restricciones:
-
-Estas frases deben mapearse al campo "restricciones" y devolver valores
-estandarizados en forma de lista, por ejemplo:
-"restricciones": ["no_animacion"]
-
-    1) No animación:
-    Frases como:
-    "no animada", "que no sea animada", 
-    "no de animación", "sin animación", 
-    "no dibujitos", "no infantil"
-    → restricciones: ["no_animacion"]
-
-    2) No terror / no sustos:
-    "no terror", "que no sea de terror", 
-    "no cosas que asusten", "no sustos", 
-    "no quiero nada de miedo", "sin miedo"
-    → restricciones: ["no_terror"]
-
-    3) No gore / no violencia / no sangrienta:
-    "sin gore", "no gore", 
-    "no muy fuerte", "no muy violenta",
-    "no sangrienta", "no sangre", 
-    "no violencia fuerte"
-    → restricciones: ["no_gore"]
-
-    4) No romance:
-    "no romántica", "sin romance", 
-    "no algo cursi", "odio el romance"
-    → restricciones: ["no_romance"]
-
-    5) No ciencia ficción / no fantasía:
-    "no sci fi", "no ciencia ficción",
-    "no cosas futuristas",
-    "no fantasía", "sin magia"
-    → restricciones: ["no_scifi"]
-
-    6) No crimen / no policiales:
-    "no policiales", "no crimen",
-    "no detectivesco"
-    → restricciones: ["no_crimen"]
-
-    7) No bélicas:
-    "no guerra", "no belicas",
-    "no militares"
-    → restricciones: ["no_guerra"]
-
-IMPORTANTE:
-- Las restricciones deben ser una lista.
-- Si el usuario menciona más de una restricción, deben combinarse.
-- Si responde algo tipo "me da igual" o "cualquiera", NO agregues restricciones.
-
-10. Interpretación de contexto social:
-
-- "solo", "sola", "solito", "para ver solo" 
-  → contexto: "solo"
-
-- "pareja", "mi novio", "mi novia", "mi pareja", "con mi pareja"
-  → contexto: "pareja"
-
-- "amigxs", "mis amigas", "con amigos", "con mis amigos", "con amigxs"
-  → contexto: "amigxs"
-
-- "familia", "familiar", "para ver con mi familia"
-  → contexto: "familia"
-
-11. Interpretación de temáticas (slot "tematicas"):
-
-Usá el slot "tematicas" para cosas más específicas que el género:
-ejemplos: sobrenatural, vampiros, hombres lobo, doctores, abogados, guerra,
-amistad, carreras, basada en hechos reales, etc.
-
-Mapeá expresiones del usuario a valores normalizados (snake_case) en "tematicas":
-
-- "sobrenatural", "cosas sobrenaturales", "algo sobrenatural"
-  → tematicas: ["sobrenatural"]
-
-- "de vampiros", "sobre vampiros", "con vampiros", "vampiros y sangre"
-  → tematicas: ["vampiros"]
-
-- "de hombres lobo", "hombres lobos", "werewolf"
-  → tematicas: ["hombres_lobo"]
-
-- "de doctores", "de médicos", "hospitales", "médicos en hospital"
-  → tematicas: ["doctores"]
-
-- "de abogados", "juicios", "tribunales", "bufete de abogados"
-  → tematicas: ["abogados"]
-
-- "de guerra", "sobre la guerra", "bélica realista"
-  → tematicas: ["guerra"]
-
-- "de amigos", "sobre amistad", "grupo de amigos"
-  → tematicas: ["amigos"]
-
-- "de carreras", "carreras de autos", "racing", "coches de carrera"
-  → tematicas: ["carreras_autos"]
-
-- "basada en hechos reales", "basada en una historia real",
-  "inspirada en hechos reales"
-  → tematicas: ["hechos_reales"]
-
-Si el usuario menciona varias cosas, combiná en la lista, por ejemplo:
-"una peli de guerra basada en hechos reales"
-→ tematicas: ["guerra", "hechos_reales"]
+8. Temáticas (si el usuario las menciona):
+   - "sobrenatural" → "tematicas": ["sobrenatural"]
+   - "vampiros" → "tematicas": ["vampiros"]
+   - "hombres lobo" → "tematicas": ["hombres_lobo"]
+   - "doctores", "médicos" → "tematicas": ["doctores"]
+   - "abogados" → "tematicas": ["abogados"]
+   - "guerra", "bélica" → "tematicas": ["guerra"]
+   - "amistad", "amigos" → "tematicas": ["amigos"]
+   - "carreras", "autos" → "tematicas": ["carreras_autos"]
+   - "basada en hechos reales" → "tematicas": ["hechos_reales"]
 
 Devolvé SIEMPRE solo el JSON, sin texto adicional ni ```.
-"""
+""".format(last_question=last_question, prev_slots_json=prev_slots_json)
 
     user_prompt = f"Mensaje del usuario: {user_text}"
 
@@ -366,19 +228,6 @@ Devolvé SIEMPRE solo el JSON, sin texto adicional ni ```.
     # Fallback seguro
     intent = data.get("intent", "other")
     slots = data.get("slots", {}) or {}
-
-    if not last_question:
-        for key in (
-            "duracion_peli",
-            "novedad",
-            "contexto",
-            "fama",
-            "temporadas",
-            "episodios_totales",
-            "duracion_capitulo",
-        ):
-            if slots.get(key) == "indiferente":
-                slots[key] = None
 
     # Aseguramos campos mínimos
     if "cantidad_recs" not in slots:
@@ -397,11 +246,14 @@ def merge_slots(prev_slots: Dict[str, Any] | None,
     Fusiona los slots anteriores con los nuevos.
 
     Reglas:
-    - None, "", [] => se ignoran siempre.
+    - None, "", [] => se ignoran siempre (no se guardan).
     - "indiferente":
         * si el slot estaba vacío -> se guarda "indiferente"
         * si ya había un valor concreto -> se mantiene el anterior.
     - cualquier otro valor pisa al anterior.
+    
+    IMPORTANTE: Solo procesa los slots que Groq devolvió.
+    No completes nada automáticamente.
     """
     merged: Dict[str, Any] = dict(prev_slots or {})
 
@@ -417,12 +269,13 @@ def merge_slots(prev_slots: Dict[str, Any] | None,
 
         # Manejo especial de "indiferente"
         if new_val == "indiferente":
-            if old_val in (None, "", []):
+            # Solo guarda "indiferente" si no había nada antes
+            if old_val in (None, "", [], "indiferente"):
                 merged[key] = "indiferente"
-            # si ya había algo, no lo pisamos
+            # si ya había algo concreto (no indiferente), mantener lo anterior
             continue
 
-        # Para cualquier otro valor, pisamos
+        # Para cualquier otro valor concreto, pisamos
         merged[key] = new_val
 
     return merged
@@ -469,7 +322,6 @@ TV_GENRES: Dict[str, int] = {
     "ciencia ficción": 10765,
 }
 
-
 def _resolve_genre_ids(content_type: ContentType, generos: List[str]) -> List[int]:
     ids: List[int] = []
     genre_map = MOVIE_GENRES if content_type == "movie" else TV_GENRES
@@ -482,7 +334,6 @@ def _resolve_genre_ids(content_type: ContentType, generos: List[str]) -> List[in
         if gid and gid not in ids:
             ids.append(gid)
     return ids
-
 
 def _tmdb_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """

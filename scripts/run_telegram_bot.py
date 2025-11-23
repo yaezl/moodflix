@@ -1,5 +1,3 @@
-# scripts/run_telegram_bot.py
-
 import logging
 
 from telegram import Update

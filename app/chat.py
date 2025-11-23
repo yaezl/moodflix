@@ -1,9 +1,5 @@
-# app/chat.py
-
 from __future__ import annotations
-
 from typing import Dict, Any, Tuple
-
 import logging
 
 from .utils import (
@@ -50,7 +46,7 @@ class ChatManager:
         }
 
     # -------------------------
-    # 🔥 ESTE MÉTODO FALTABA ACÁ
+    # Mensajes de bienvenida
     # -------------------------
     def _welcome_message(self) -> str:
         return (
@@ -128,6 +124,9 @@ class ChatManager:
             save_conversation_history(user_id, text, msg, parsed)
             return msg
 
+        # Limpia last_question para que busque la siguiente
+        state["last_question"] = None
+
         question = self._next_question(merged_slots)
         if question:
             state["last_question"] = question["key"]
@@ -167,7 +166,7 @@ class ChatManager:
         if tipo == "tv":
 
             # 1) Percepción: Temporadas
-            if temporadas in (None, "", "indiferente"):
+            if temporadas is None or temporadas == "":
                 return {
                     "key": "temporadas",
                     "text": (
@@ -176,7 +175,7 @@ class ChatManager:
                 }
 
             # 2) Real: Cantidad total de capítulos
-            if episodios_totales in (None, "", "indiferente"):
+            if episodios_totales is None or episodios_totales == "":
                 return {
                     "key": "episodios_totales",
                     "text": (
@@ -185,7 +184,7 @@ class ChatManager:
                 }
 
             # 3) Duración del capítulo
-            if duracion_capitulo in (None, "", "indiferente"):
+            if duracion_capitulo is None or duracion_capitulo == "":
                 return {
                     "key": "duracion_capitulo",
                     "text": (
@@ -194,22 +193,23 @@ class ChatManager:
                 }
         # Pregunta específica de películas
         if tipo == "movie":
-            if duracion_peli in (None, "", ""):
+            # Si es "indiferente", no preguntar de nuevo
+            if duracion_peli is None or duracion_peli == "":
                 return {
                     "key": "duracion_peli",
                     "text": "¿Preferís una peli **corta (menos de 100 min)** o **larga (más de 130 min)**?"
                 }
             
         # Preguntas generales
-        if novedad in (None, "", "indiferente"):
+        if novedad is None or novedad == "":
             return {"key": "novedad",
                     "text": "¿Preferís algo **nuevo** o también te va algún **clásico**?"}
 
-        if contexto in (None, ""):
+        if contexto is None or contexto == "":
             return {"key": "contexto",
                     "text": "¿Lo vas a ver solo, con pareja, con amigos/as o en familia?"}
 
-        if fama in (None, "", "indiferente"):
+        if fama is None or fama == "":
             return {"key": "fama",
                     "text": "¿Algo muy conocido o una joyita poco vista?"}
 
@@ -358,9 +358,19 @@ class ChatManager:
         parts.append(intro + " 👇\n")
 
         for rec in recs:
-            title = f"🎬 *{rec['title']}* ({rec['year']})"
-            genres = f"• Géneros: {rec['genres']}"
-            duration = f"• Duración: {rec['duration']}"
+            # Sanitizar texto para Markdown de Telegram
+            def sanitize_text(text):
+                if not text:
+                    return text
+                # Escapar caracteres especiales que causan problemas
+                text = text.replace("_", "\\_")
+                text = text.replace("[", "\\[")
+                text = text.replace("]", "\\]")
+                return text
+            
+            title = f"🎬 {sanitize_text(rec['title'])} ({rec['year']})"
+            genres = f"• Géneros: {sanitize_text(rec['genres'])}"
+            duration = f"• Duración: {sanitize_text(rec['duration'])}"
 
             extras = []
             if tipo == "tv":
@@ -372,8 +382,9 @@ class ChatManager:
             overview = rec["overview"]
             if len(overview) > 380:
                 overview = overview[:380].rsplit(" ", 1)[0] + "..."
+            overview = sanitize_text(overview)
 
-            providers = rec["providers_text"]
+            providers = sanitize_text(rec["providers_text"])
 
             block = [
                 title, genres, duration, *extras, "",
@@ -388,4 +399,8 @@ class ChatManager:
             "o cambiar algo (género, duración, cambiar a serie o peli, o decir *\"que no sea animada\"*, etc.)."
         )
 
-        return "\n".join(parts).strip()
+        response = "\n".join(parts).strip()
+        
+        response = response.replace("**", "*")  # Cambiar ** por * para evitar conflictos
+        
+        return response
