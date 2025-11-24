@@ -160,7 +160,7 @@ class ChatManager:
 
         if not generos:
             return {"key": "generos",
-                    "text": "Bien. ¿De qué estilo te gustaría?\nPodés decirme uno o varios géneros: comedia, terror, drama, acción, romántica, ciencia ficción, etc."}
+                    "text": "Bien. ¿De qué estilo te gustaría?\nPodés decirme uno o varios géneros: comedia, terror, drama, acción, romance, ciencia ficción, etc."}
 
         # Preguntas específicas de series
         if tipo == "tv":
