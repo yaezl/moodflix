@@ -12,8 +12,6 @@ load_dotenv()
 class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    spotify_client_id: str = os.getenv("SPOTIFY_CLIENT_ID", "")
-    spotify_client_secret: str = os.getenv("SPOTIFY_CLIENT_SECRET", "")
     tmdb_api_key: str = os.getenv("TMDB_API_KEY", "")
     region: str = os.getenv("REGION", "AR")
     llm_model: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
